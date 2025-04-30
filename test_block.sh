@@ -1,0 +1,1 @@
+python -m megapose.scripts.pose_estimation.py --image /home/geraldebmer/Documents/Megapose/examples/legoblock/image.png --ply /home/geraldebmer/Documents/Megapose/examples/legoblock/block.ply --prompt "block" --output-dir /home/geraldebmer/Documents/Megapose/examples/legoblock
