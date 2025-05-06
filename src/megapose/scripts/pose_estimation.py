@@ -1,24 +1,22 @@
-# Standard Library
 import argparse
 import json
 import os
 from pathlib import Path
 from typing import List, Tuple, Union
 
-# Third Party
 import cv2
 import numpy as np
 import torch
 from bokeh.io import export_png
 from bokeh.plotting import gridplot
 from PIL import Image
-from transformers import AutoModelForObjectDetection, AutoProcessor
+from ultralytics import YOLO
+import pandas as pd
 
-# MegaPose
 from megapose.config import LOCAL_DATA_DIR
 from megapose.datasets.object_dataset import RigidObject, RigidObjectDataset
 from megapose.datasets.scene_dataset import CameraData, ObjectData
-from megapose.inference.types import DetectionsType, ObservationTensor, PoseEstimatesType
+from megapose.inference.types import DetectionsType, ObservationTensor, PoseEstimatesType, PandasTensorCollection
 from megapose.inference.utils import make_detections_from_object_data
 from megapose.lib3d.transform import Transform
 from megapose.panda3d_renderer import Panda3dLightData
@@ -31,54 +29,35 @@ from megapose.visualization.utils import make_contour_overlay
 
 logger = get_logger(__name__)
 
-def load_yolo_world_model():
-    """Load YOLO-World v2 model and processor from Hugging Face."""
-    model_id = "stevengrove/YOLO-World"
-    processor = AutoProcessor.from_pretrained(model_id)
-    model = AutoModelForObjectDetection.from_pretrained(model_id).cuda()
-    return processor, model
-
-def detect_objects_yolo_world(
+def detect_objects_yolov8(
     image: np.ndarray,
-    prompt: str,
-    processor,
-    model,
+    model_path: str,
     confidence_threshold: float = 0.3,
 ) -> DetectionsType:
-    """Detect objects using YOLO-World with a text prompt."""
-    # Convert image to RGB (YOLO-World expects RGB)
+    """Detect objects using YOLOv8 model."""
+    # Convert image to RGB (YOLOv8 expects RGB)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
-    # Prepare inputs for YOLO-World
-    inputs = processor(images=image_rgb, text=[prompt], return_tensors="pt").to("cuda")
+    # Load YOLOv8 model
+    model = YOLO(model_path)
     
     # Run inference
-    with torch.no_grad():
-        outputs = model(**inputs)
+    results = model.predict(image_rgb, conf=confidence_threshold, verbose=False)
     
-    # Extract bounding boxes and scores
-    boxes = outputs.pred_boxes[0].cpu().numpy()  # [N, 4] in xyxy format
-    scores = outputs.scores[0].cpu().numpy()  # [N]
+    # Extract detections
+    boxes = results[0].boxes.xyxy.cpu().numpy()  # [N, 4] in xyxy format
+    scores = results[0].boxes.conf.cpu().numpy()  # [N]
+    labels = ["block"] * len(boxes)  # Single class 'block'
     
-    # Filter detections by confidence
-    valid_idx = scores >= confidence_threshold
-    boxes = boxes[valid_idx]
-    scores = scores[valid_idx]
-    
-    # Convert to MegaPose DetectionsType
-    labels = ["block"] * len(boxes)  # Single label for all blocks
+    # Convert to MegaPose DetectionsType (PandasTensorCollection)
     bboxes = torch.tensor(boxes, dtype=torch.float32).cuda()
-    infos = {"label": labels, "score": scores.tolist()}
+    infos = pd.DataFrame({
+        "batch_im_id": [0] * len(boxes),  # Single image, so batch_im_id = 0
+        "label": labels,
+        "score": scores
+    })
     
-    class Detections:
-        def __init__(self, bboxes, infos):
-            self.bboxes = bboxes
-            self.infos = infos
-        
-        def cuda(self):
-            return self
-    
-    detections = Detections(bboxes=bboxes, infos=infos)
+    detections = PandasTensorCollection(infos=infos, bboxes=bboxes)
     return detections
 
 def load_observation(
@@ -87,20 +66,19 @@ def load_observation(
     load_depth: bool = False,
 ) -> Tuple[np.ndarray, Union[None, np.ndarray], CameraData]:
     """Load an RGB image and optional camera data."""
-    rgb = np.array(Image.open(image_path), dtype=np.uint8)
+    rgb = np.array(Image.open(image_path).convert('RGB'), dtype=np.uint8)
     
     if camera_data is None:
-        # Default camera parameters (adjust based on your setup)
         camera_data = CameraData(
             resolution=rgb.shape[:2],
             K=np.array([[800, 0, rgb.shape[1]/2],
                        [0, 800, rgb.shape[0]/2],
-                       [0, 0, 1]], dtype=np.float32),  # Example intrinsic matrix
+                       [0, 0, 1]], dtype=np.float32),
         )
     
     depth = None
     if load_depth:
-        raise NotImplementedError("Depth loading not implemented in this example")
+        raise NotImplementedError("Depth loading not implemented")
     
     return rgb, depth, camera_data
 
@@ -112,17 +90,16 @@ def load_observation_tensor(
     """Convert image to ObservationTensor for MegaPose."""
     rgb, depth, camera_data = load_observation(image_path, camera_data, load_depth)
     
-    # Convert RGB to grayscale for color-agnostic processing
     rgb_gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    rgb_gray = cv2.cvtColor(rgb_gray, cv2.COLOR_GRAY2RGB)  # Convert back to 3 channels
+    rgb_gray = cv2.cvtColor(rgb_gray, cv2.COLOR_GRAY2RGB)
     
     observation = ObservationTensor.from_numpy(rgb_gray, depth, camera_data.K)
     return observation
 
 def make_object_dataset(ply_path: Path) -> RigidObjectDataset:
-    """Create a RigidObjectDataset from a single PLY file."""
+    """Create a RigidObjectDataset from a PLY file."""
     label = "block"
-    mesh_units = "mm"  # Ensure PLY is in millimeters
+    mesh_units = "mm"
     rigid_objects = [RigidObject(label=label, mesh_path=ply_path, mesh_units=mesh_units)]
     return RigidObjectDataset(rigid_objects)
 
@@ -130,7 +107,7 @@ def save_predictions(
     output_dir: Path,
     pose_estimates: PoseEstimatesType,
 ) -> None:
-    """Save estimated poses to a JSON file."""
+    """Save estimated poses to JSON."""
     labels = pose_estimates.infos["label"]
     poses = pose_estimates.poses.cpu().numpy()
     object_data = [
@@ -150,7 +127,7 @@ def make_visualizations(
     detections: DetectionsType,
     camera_data: CameraData,
 ) -> None:
-    """Generate visualizations for detections and pose estimates."""
+    """Generate lightweight visualizations using OpenCV."""
     rgb, _, _ = load_observation(image_path, camera_data, load_depth=False)
     object_dataset = make_object_dataset(ply_path)
     object_datas = [
@@ -177,53 +154,43 @@ def make_visualizations(
         copy_arrays=True,
     )[0]
     
-    # Create visualizations
-    plotter = BokehPlotter()
-    
-    # Detections
-    fig_rgb = plotter.plot_image(rgb)
-    fig_det = plotter.plot_detections(fig_rgb, detections=detections)
-    
-    # Pose overlays
-    fig_mesh_overlay = plotter.plot_overlay(rgb, renderings.rgb)
-    contour_overlay = make_contour_overlay(
-        rgb, renderings.rgb, dilate_iterations=1, color=(0, 255, 0)
-    )["img"]
-    fig_contour_overlay = plotter.plot_image(contour_overlay)
-    
-    # Combine visualizations
-    fig_all = gridplot([[fig_rgb, fig_det, fig_contour_overlay, fig_mesh_overlay]], toolbar_location=None)
-    
-    # Save visualizations
+    # Create visualizations directory
     vis_dir = output_dir / "visualizations"
     vis_dir.mkdir(exist_ok=True)
-    export_png(fig_det, filename=vis_dir / "detections.png")
-    export_png(fig_mesh_overlay, filename=vis_dir / "mesh_overlay.png")
-    export_png(fig_contour_overlay, filename=vis_dir / "contour_overlay.png")
-    export_png(fig_all, filename=vis_dir / "all_results.png")
+    
+    # 1. Detections visualization
+    img_detections = rgb.copy()
+    for bbox, info in zip(detections.tensors["bboxes"].cpu().numpy(), detections.infos.itertuples()):
+        x1, y1, x2, y2 = map(int, bbox)
+        label = f"{info.label} ({info.score:.2f})"
+        cv2.rectangle(img_detections, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(img_detections, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    cv2.imwrite(str(vis_dir / "detections.png"), cv2.cvtColor(img_detections, cv2.COLOR_RGB2BGR))
+    
+    # 2. Pose overlay visualization
+    img_pose = cv2.addWeighted(rgb, 0.5, renderings.rgb, 0.5, 0.0)
+    cv2.imwrite(str(vis_dir / "pose_overlay.png"), cv2.cvtColor(img_pose, cv2.COLOR_RGB2BGR))
+    
     logger.info(f"Wrote visualizations to {vis_dir}")
+
 
 def run_pose_estimation(
     image_path: Path,
     ply_path: Path,
     output_dir: Path,
-    prompt: str,
+    model_path: str,
     model_name: str = "megapose-1.0-RGB",
     camera_data: CameraData = None,
 ) -> None:
-    """Run 6D pose estimation using YOLO-World for detection and MegaPose for pose estimation."""
-    # Load YOLO-World
-    logger.info("Loading YOLO-World model.")
-    processor, yolo_model = load_yolo_world_model()
-    
+    """Run 6D pose estimation using YOLOv8 for detection and MegaPose for pose estimation."""
     # Load image
     rgb, _, camera_data = load_observation(image_path, camera_data)
     
     # Detect objects
-    logger.info(f"Running YOLO-World detection with prompt: {prompt}")
-    detections = detect_objects_yolo_world(rgb, prompt, processor, yolo_model)
+    logger.info("Running YOLOv8 detection")
+    detections = detect_objects_yolov8(rgb, model_path)
     
-    # Load observation tensor (grayscale for color-agnostic processing)
+    # Load observation tensor
     observation = load_observation_tensor(image_path, camera_data, load_depth=False).cuda()
     
     # Create object dataset
@@ -234,7 +201,7 @@ def run_pose_estimation(
     pose_estimator = load_named_model(model_name, object_dataset).cuda()
     
     # Run inference
-    logger.info("Running MegaPose inference.")
+    logger.info("Running MegaPose inference")
     model_info = NAMED_MODELS[model_name]
     output, _ = pose_estimator.run_inference_pipeline(
         observation, detections=detections, **model_info["inference_parameters"]
@@ -248,10 +215,11 @@ def run_pose_estimation(
 
 if __name__ == "__main__":
     set_logging_level("info")
-    parser = argparse.ArgumentParser(description="6D Pose Estimation with YOLO-World and MegaPose")
-    parser.add_argument("--image", type=Path, required=True, help="Path to input RGB image")
-    parser.add_argument("--ply", type=Path, required=True, help="Path to PLY file")
-    parser.add_argument("--prompt", type=str, default="block", help="Text prompt for YOLO-World")
+    parser = argparse.ArgumentParser(description="6D Pose Estimation with YOLOv8 and MegaPose")
+    parser.add_argument("--image", type=Path, required=True, default="/home/geraldebmer/Documents/Megapose/examples/legoblock/image.png", help="Path to input RGB image")
+    parser.add_argument("--ply", type=Path, required=True, default="/home/geraldebmer/Documents/Megapose/examples/legoblock/block.ply", help="Path to PLY file")
+    parser.add_argument("--model-path", type=str, default="/home/geraldebmer/repos/megapose6d/src/detection/runs/train/exp/fold_4/weights/best.pt", 
+                        help="Path to YOLOv8 model")
     parser.add_argument("--output-dir", type=Path, default=LOCAL_DATA_DIR / "outputs", help="Output directory")
     parser.add_argument("--model", type=str, default="megapose-1.0-RGB", help="MegaPose model name")
     args = parser.parse_args()
@@ -260,6 +228,6 @@ if __name__ == "__main__":
         image_path=args.image,
         ply_path=args.ply,
         output_dir=args.output_dir,
-        prompt=args.prompt,
+        model_path=args.model_path,
         model_name=args.model,
     )

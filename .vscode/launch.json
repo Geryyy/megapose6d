@@ -1,0 +1,51 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Pose Estimation",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/megapose/scripts/pose_estimation.py",
+            "args": [
+                "--image",
+                "/home/geraldebmer/Documents/Megapose/examples/legoblock/image.png",
+                "--ply",
+                "/home/geraldebmer/Documents/Megapose/examples/legoblock/block.ply",
+                "--model-path",
+                "/home/geraldebmer/repos/megapose6d/src/detection/runs/train/exp/fold_4/weights/best.pt",
+                "--output-dir",
+                "outputs"
+            ],
+            "env": {
+                "MKL_NUM_THREADS": "1",
+                "OMP_NUM_THREADS": "1",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/src/megapose"
+            },
+            "cwd": "${workspaceFolder}/src/megapose/scripts",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Debug Run Inference on Example",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/megapose/scripts/run_inference_on_example.py",
+            "args": [
+                "barbecue-sauce",
+                "--vis-detections",
+                "--run-inference",
+                "--vis-outputs",
+            ],
+            "env": {
+                "MKL_NUM_THREADS": "1",
+                "OMP_NUM_THREADS": "1",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/src/megapose/scripts"
+            },
+            "cwd": "${workspaceFolder}/src/megapose/scripts",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}

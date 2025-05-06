@@ -21,3 +21,5 @@ my-notebooks/
 tmp/
 *tmp/
 tests.sh
+*runs/
+*runs_*/

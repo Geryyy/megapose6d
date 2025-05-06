@@ -39,7 +39,20 @@ def load_observation(
 ) -> Tuple[np.ndarray, Union[None, np.ndarray], CameraData]:
     camera_data = CameraData.from_json((example_dir / "camera_data.json").read_text())
 
-    rgb = np.array(Image.open(example_dir / "image_rgb.png"), dtype=np.uint8)
+    # Define possible filenames
+    png_path = example_dir / "image_rgb.png"
+    jpg_path = example_dir / "image_rgb.jpg"
+
+    # Choose whichever file exists
+    if png_path.exists():
+        image_path = png_path
+    elif jpg_path.exists():
+        image_path = jpg_path
+    else:
+        raise FileNotFoundError("Neither PNG nor JPG image found.")
+
+    # Load the image
+    rgb = np.array(Image.open(image_path), dtype=np.uint8)
     assert rgb.shape[:2] == camera_data.resolution
 
     depth = None
@@ -217,6 +230,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     example_dir = LOCAL_DATA_DIR / "examples" / args.example_name
+    print("example_dir: {}".format(example_dir))
 
     if args.vis_detections:
         make_detections_visualization(example_dir)
