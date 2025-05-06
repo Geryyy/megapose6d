@@ -31,3 +31,9 @@ python yolo_detect_and_display.py --model src/detection/runs/train/exp/weights/b
 ```bash
 python pose_estimation.py --image /home/geraldebmer/Documents/Megapose/examples/legoblock/image.png --ply /home/geraldebmer/Documents/Megapose/examples/legoblock/block.ply --model-path /home/geraldebmer/repos/megapose6d/src/detection/runs/train/exp/fold_4/weights/best.pt --output-dir outputs
 ```
+
+# Combined
+
+```bash
+python combined_yolo_megapose.py --yolo-model /home/geraldebmer/repos/megapose6d/src/weights/legoblocks.pt --source /home/geraldebmer/Documents/Megapose/examples/legoblock/image_rgb.jpg --mesh-dir /home/geraldebmer/Documents/Megapose/examples/legoblock/meshes --conf 0.3
+```
